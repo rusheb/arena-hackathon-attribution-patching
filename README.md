@@ -11,3 +11,6 @@ Research on Attribution patching ACDC extensions.
     poetry config virtualenvs.in-project true
     poetry install
     ```
+
+## Acknowledgements
+Code heavily plagiarised from [ARENA Exercises](https://github.com/callummcdougall/ARENA_2.0)
