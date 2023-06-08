@@ -13,4 +13,6 @@ Research on Attribution patching ACDC extensions.
     ```
 
 ## Acknowledgements
-Code heavily plagiarised from [ARENA Exercises](https://github.com/callummcdougall/ARENA_2.0)
+Code heavily plagiarised from 
+- [ARENA Exercises](https://github.com/callummcdougall/ARENA_2.0)
+- [Attribution patching demo](https://colab.research.google.com/github/neelnanda-io/TransformerLens/blob/main/demos/Attribution_Patching_Demo.ipynb#scrollTo=f8BHMKYEiAxN)

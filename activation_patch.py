@@ -143,3 +143,5 @@ imshow(
     title="resid_pre Activation Patching",
     width=600
 )
+
+# %%
