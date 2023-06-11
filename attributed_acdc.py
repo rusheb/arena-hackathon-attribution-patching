@@ -18,6 +18,7 @@ from functools import partial
 from IPython.display import display, HTML
 from rich.table import Table, Column
 from rich import print as rprint
+from rich import box
 import circuitsvis as cv
 from pathlib import Path
 from transformer_lens.hook_points import HookPoint
@@ -276,18 +277,10 @@ def format_heads_pruned(should_prune: Bool[Tensor, 'n_layer n_heads']) -> str:
         for layer, head in zip(*should_prune.nonzero())
     ])
 
-#%%
-def format_heads_pruned(should_prune: Bool[Tensor, 'n_layer n_heads']) -> str:
-    should_prune = should_prune.cpu().numpy()
-    return ", ".join([
-        f"L{layer}H{head}"
-        for layer, head in zip(*should_prune.nonzero())
-    ])
-
 # %%
 if MAIN:
     st = time.time()
-    pruned_model, should_prune, = acdc_nodes(model, ioi_dataset.toks,
+    pruned_model, should_prune = acdc_nodes(model, ioi_dataset.toks,
                                              abc_dataset.toks, ioi_metric,
                                              threshold=0.02,
                                              create_model=create_model,
@@ -297,4 +290,19 @@ if MAIN:
     print(f"Nodes in the circuit: {format_heads_pruned(should_prune.logical_not())}")
 
 # %%
+if MAIN:
+    table = Table(show_header=True, header_style="bold magenta", box=box.SQUARE, show_lines=True)
+    table.add_column("Threshold")
+    table.add_column("Nodes in the circuit")
 
+    for thresh in [0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.1]:
+        pruned_model, should_prune = acdc_nodes(model, ioi_dataset.toks,
+                                                 abc_dataset.toks,
+                                                 ioi_metric,
+                                                 threshold=thresh,
+                                                 create_model=create_model,
+                                                 attr_absolute_val=True)
+        table.add_row(f"{thresh:.2f}\n\n", format_heads_pruned(should_prune.logical_not()))
+        
+    display(table)
+# %%
