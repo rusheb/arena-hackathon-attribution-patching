@@ -45,7 +45,7 @@ if MAIN:
       fold_ln=True,
         refactor_factored_attn_matrices=True,
     )
-model.set_use_split_qkv_input(True)
+# model.set_use_split_qkv_input(True)
 model.set_use_attn_result(True)
 #%%
 hook_filter = lambda name: name.endswith("ln1.hook_normalized") or name.endswith("attn.hook_result")
@@ -133,6 +133,7 @@ def acdc_brrr(model: HookedTransformer,
             if should_prune[layer_sender, head_sender, layer_receiver, head_receiver]:
                 # prune the edge
                 #! TODO
+                pass
 
     # compute metric on pruned subgraph vs whole graph
     metric_full_graph = metric(model(clean_input))
@@ -141,4 +142,105 @@ def acdc_brrr(model: HookedTransformer,
     # return the pruned subgraph and the metrics
     return pruned_model, metric_full_graph, metric_pruned_graph
     
+# %%
+def acdc_nodes(model: HookedTransformer,
+              clean_input: Tensor,
+              corrupted_input: Tensor,
+              metric: Callable[[Tensor], Tensor],
+              threshold: float) -> Tuple[HookedTransformer, Bool[Tensor, 'n_layer n_heads'],
+                                         Float[Tensor, ''], Float[Tensor, '']]:
+    # get the 2 fwd and 1 bwd caches; cache "normalized" and "result" of attn layers
+    clean_cache, corrupted_cache, clean_grad_cache = get_3_caches(model, clean_input, corrupted_input, metric)
+
+    # take all pairs of heads, 
+    # edges = [
+    #       ((layer_sender, head_sender), (layer_receiver, head_receiver))
+    #       for layer_sender, layer_receiver in itertools.product(range(model.cfg.n_layer), repeat=2)
+    #       for head_sender, head_receiver in itertools.product(range(model.cfg.n_heads), repeat=2)
+    #       if layer_sender < layer_receiver
+    # ]
+
+    # compute first-order Taylor approximation for each node to get the attribution
+    clean_head_act = clean_cache.stack_head_results()
+    corr_head_act = corrupted_cache.stack_head_results()
+    clean_grad_act = clean_grad_cache.stack_head_results()
+
+    # compute attributions of each node
+    node_attr = (clean_head_act - corr_head_act) * clean_grad_act
+    # separate layers and heads, sum over d_model (to complete the dot product), batch, and seq
+    node_attr = split_layers_and_heads(node_attr, model).sum((2, 3, 4))
+
+    # prune all nodes whose attribution is below the threshold
+    should_prune = node_attr < threshold
+    pruned_model = model.copy()
+    for layer, head in itertools.product(range(model.cfg.n_layer), range(model.cfg.n_heads)):
+        if should_prune[layer, head]:
+            pruned_model.W_Q[layer, head].zero_()
+
+    # compute metric on pruned subgraph vs whole graph
+    metric_full_graph = metric(model(clean_input))
+    metric_pruned_graph = metric(pruned_model(clean_input))
+
+    # return the pruned subgraph, which heads were pruned, and the metrics
+    return pruned_model, should_prune, metric_full_graph, metric_pruned_graph
+    
+# %%
+from ioi_dataset import NAMES, IOIDataset
+N = 25
+ioi_dataset = IOIDataset(
+    prompt_type="mixed",
+    N=N,
+    tokenizer=model.tokenizer,
+    prepend_bos=False,
+    seed=1,
+    device=str(device)
+)
+abc_dataset = ioi_dataset.gen_flipped_prompts("ABB->XYZ, BAB->XYZ")
+
+def logits_to_ave_logit_diff_2(logits: Float[Tensor, "batch seq d_vocab"], ioi_dataset: IOIDataset = ioi_dataset, per_prompt=False):
+    '''
+    Returns logit difference between the correct and incorrect answer.
+
+    If per_prompt=True, return the array of differences rather than the average.
+    '''
+
+    # Only the final logits are relevant for the answer
+    # Get the logits corresponding to the indirect object / subject tokens respectively
+    io_logits: Float[Tensor, "batch"] = logits[range(logits.size(0)), ioi_dataset.word_idx["end"], ioi_dataset.io_tokenIDs]
+    s_logits: Float[Tensor, "batch"] = logits[range(logits.size(0)), ioi_dataset.word_idx["end"], ioi_dataset.s_tokenIDs]
+    # Find logit difference
+    answer_logit_diff = io_logits - s_logits
+    return answer_logit_diff if per_prompt else answer_logit_diff.mean()
+
+with t.no_grad():
+  ioi_logits_original = model(ioi_dataset.toks)
+  abc_logits_original = model(abc_dataset.toks)
+
+ioi_per_prompt_diff = logits_to_ave_logit_diff_2(ioi_logits_original, per_prompt=True)
+abc_per_prompt_diff = logits_to_ave_logit_diff_2(abc_logits_original, per_prompt=True)
+
+ioi_average_logit_diff = logits_to_ave_logit_diff_2(ioi_logits_original).item()
+abc_average_logit_diff = logits_to_ave_logit_diff_2(abc_logits_original).item()
+
+def ioi_metric(
+    logits: Float[Tensor, "batch seq d_vocab"],
+    clean_logit_diff: float = ioi_average_logit_diff,
+    corrupted_logit_diff: float = abc_average_logit_diff,
+    ioi_dataset: IOIDataset = ioi_dataset,
+) -> float:
+    '''
+    We calibrate this so that the value is 0 when performance isn't harmed (i.e. same as IOI dataset), 
+    and -1 when performance has been destroyed (i.e. is same as ABC dataset).
+    '''
+    patched_logit_diff = logits_to_ave_logit_diff_2(logits, ioi_dataset)
+    return (patched_logit_diff - clean_logit_diff) / (clean_logit_diff - corrupted_logit_diff)
+
+# %%
+pruned_model, should_prune, metric_full, metric_pruned = acdc_nodes(model,
+                                                                    ioi_dataset.toks,
+                                                                    abc_dataset.toks,
+                                                                    ioi_metric, 0.1)
+print(f"Metric on full graph: {metric_full}")
+print(f"Metric on pruned graph: {metric_pruned}")
+print(f"Number of heads pruned: {should_prune.sum()}, out of {should_prune.numel()}")
 # %%
