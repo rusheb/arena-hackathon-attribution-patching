@@ -1,6 +1,7 @@
 #%%
 import os; os.environ["ACCELERATE_DISABLE_RICH"] = "1"
 import sys
+import time
 from pathlib import Path
 import torch as t
 from torch import Tensor
@@ -242,16 +243,27 @@ def ioi_metric(
     patched_logit_diff = logits_to_ave_logit_diff_2(logits, ioi_dataset)
     return (patched_logit_diff - clean_logit_diff) / (clean_logit_diff - corrupted_logit_diff)
 
+#%%
+def format_heads_pruned(should_prune: Bool[Tensor, 'n_layer n_heads']) -> str:
+    should_prune = should_prune.cpu().numpy()
+    return ", ".join([
+        f"L{layer}H{head}"
+        for layer, head in zip(*should_prune.nonzero())
+    ])
+
 # %%
+st = time.time()
 pruned_model, should_prune, metric_full, metric_pruned = acdc_nodes(model,
                                                                     ioi_dataset.toks,
                                                                     abc_dataset.toks,
                                                                     ioi_metric,
                                                                     threshold=0.05,
                                                                     attr_absolute_val=True)
+print(f"Time taken: {time.time() - st:.2f}s")
 print(f"Metric on full graph: {metric_full}")
 print(f"Metric on pruned graph: {metric_pruned}")
 print(f"Number of heads pruned: {should_prune.sum()}, out of {should_prune.numel()}")
-print(f"Nodes that weren't pruned: {should_prune.logical_not().nonzero()}")
+print(f"Nodes that weren't pruned: {format_heads_pruned(should_prune.logical_not())}")
 
 # %%
+
